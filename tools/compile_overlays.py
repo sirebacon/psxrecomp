@@ -5193,7 +5193,8 @@ def cached_shard_manifest_status(dll_path: str, expected_abi: int | None,
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+                                 formatter_class=argparse.RawDescriptionHelpFormatter,
+                                 fromfile_prefix_chars='@')
     ap.add_argument('--captures',        default=None,
                     help='overlay_captures.json from the runtime. Optional: the '
                          'runtime injects PSX_OVERLAY_CAPTURES (the canonical '
