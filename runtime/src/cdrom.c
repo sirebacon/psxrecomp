@@ -20,6 +20,7 @@
 #include "interrupts.h"
 #include "psx_cycles.h"
 #include "psx_netplay.h"
+#include "latency_ring.h" /* TEMPORARY (2026-09-12 FMV-dip investigation) */
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -1422,11 +1423,20 @@ static int read_sector_at(int min, int sec, int sect) {
     int history_size = SECTOR_SIZE;
 
     if (iso_handle) {
+        /* TEMPORARY (2026-09-12 FMV-dip investigation) — see latency_ring.h.
+         * iso_reader.cpp does a synchronous, unbuffered seekg+read per sector
+         * with no read-ahead/cache; this checks whether an occasional slow
+         * one lines up with a frame_period outlier in the latency ring. */
+        uint64_t __cd_t0 = latency_ring_cd_read_begin();
         have_raw = iso_read_raw_sector(iso_handle, lba, raw_data, RAW_SECTOR_SIZE);
         if (have_raw) {
             memcpy(user_data, raw_data + RAW_USER_DATA_OFFSET, SECTOR_SIZE);
+            latency_ring_cd_read_end(__cd_t0, (uint32_t)lba);
         } else if (!iso_read_sector(iso_handle, lba, user_data, SECTOR_SIZE)) {
+            latency_ring_cd_read_end(__cd_t0, (uint32_t)lba);
             memset(user_data, 0, sizeof(user_data));
+        } else {
+            latency_ring_cd_read_end(__cd_t0, (uint32_t)lba);
         }
         if (subq_replacements_active) update_last_valid_subq((uint32_t)lba);
     } else {
@@ -1434,8 +1444,13 @@ static int read_sector_at(int min, int sec, int sect) {
     }
 
     delivery = classify_raw_sector(raw_data, have_raw);
-    delivery.xa_audio_delivered =
-        (uint8_t)maybe_deliver_xa_audio(raw_data, lba, &delivery);
+    {
+        /* TEMPORARY (2026-09-12 FMV-dip investigation, Phase 2). */
+        uint64_t __xa_t0 = latency_ring_xa_begin();
+        delivery.xa_audio_delivered =
+            (uint8_t)maybe_deliver_xa_audio(raw_data, lba, &delivery);
+        latency_ring_xa_end(__xa_t0);
+    }
     delivery.data_delivered = 1;
     if (delivery.xa_audio_delivered ||
         ((mode_reg & 0x08u) && xa_is_audio_realtime(&delivery))) {

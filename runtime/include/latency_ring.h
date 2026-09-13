@@ -61,6 +61,44 @@ int latency_ring_summary_json(char *buf, int buf_size, int window);
  * microseconds relative to the oldest reported frame). */
 int latency_ring_dump_json(char *buf, int buf_size, int max_frames);
 
+/* TEMPORARY diagnostic (2026-09-12, FMV-dip investigation — see
+ * findings/fmv-frame-stall.md): correlate disc-image sector-read duration
+ * against the frame it happened in, so a slow synchronous read (iso_reader.cpp
+ * has no read-ahead/cache) can be checked directly against a frame_period
+ * outlier from the same dump instead of guessed at. Call
+ * latency_ring_cd_read_begin() right before the read, then
+ * latency_ring_cd_read_end() right after with the same value and the LBA
+ * read; the current frame slot keeps the single slowest read of the frame
+ * (and how many reads happened) — enough to see, per frame, "yes a read
+ * happened here and it took N microseconds" without a separate ring. Remove
+ * once the WO-8 (or whatever it gets numbered) finding is settled either way. */
+uint64_t latency_ring_cd_read_begin(void);
+void latency_ring_cd_read_end(uint64_t start_ticks, uint32_t lba);
+
+/* TEMPORARY diagnostic (2026-09-12 FMV-dip investigation, Phase 2 of
+ * findings/fmv-frame-stall-plan.md) — same pattern as the CD-read pair
+ * above, applied to the two systems FMV exercises that ordinary gameplay
+ * doesn't (Phase 1 found FMV-specific stalls at ~12x gameplay's rate):
+ * MDEC video decode (mdec.c's execute_decode()) and XA-ADPCM audio decode
+ * (cdrom.c's maybe_deliver_xa_audio()). Same contract: begin right before
+ * the call, end right after with the same start value; the current frame
+ * slot keeps the single slowest call of the frame and how many happened. */
+uint64_t latency_ring_mdec_begin(void);
+void latency_ring_mdec_end(uint64_t start_ticks);
+uint64_t latency_ring_xa_begin(void);
+void latency_ring_xa_end(uint64_t start_ticks);
+
+/* TEMPORARY diagnostic (2026-09-12, Phase 2 continued) — MDEC/XA/CD are all
+ * ruled out (max ever seen well under 2ms; the single worst stall this
+ * session, 163ms, had zero calls to any of them). Times the actual native
+ * overlay dispatch call itself (overlay_loader.c's `c->fn(cpu)`), which
+ * every earlier check only measured by RATE (calls/sec), never by
+ * individual call duration — catches any one unusually slow native
+ * function, not just the ones already guessed at. Records the slowest
+ * call's guest address too, so a hit can be attributed. */
+uint64_t latency_ring_dispatch_begin(void);
+void latency_ring_dispatch_end(uint64_t start_ticks, uint32_t addr);
+
 #ifdef __cplusplus
 }
 #endif

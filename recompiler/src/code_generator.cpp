@@ -12,6 +12,7 @@
 #include "../../runtime/include/psx_instr_cost.h"  /* single-source CPU cycle cost (shared with interp) */
 #include <fmt/format.h>
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <set>
 #include <stdexcept>
@@ -31,6 +32,20 @@ static bool should_print_reserved_opcode_warning(uint32_t addr) {
         return true;
     static std::unordered_set<uint32_t> seen;
     return seen.insert(addr).second;
+}
+
+/* TEMPORARY (2026-09-13, WO-10/WO-11 prototype) — see
+ * findings/fmv-irq-batch-prototype-ai-brief.md. Two independent, default-OFF
+ * opt-ins for the per-block CPS interrupt-check-batching experiment; see
+ * code_generator.h's current_block_irq_elidable_ comment for the safety
+ * contract both rely on. */
+static bool irq_batch_loop_enabled() {
+    const char* e = std::getenv("PSX_IRQ_BATCH_LOOP");
+    return e != nullptr && e[0] == '1';
+}
+static bool irq_batch_chain_enabled() {
+    const char* e = std::getenv("PSX_IRQ_BATCH_CHAIN");
+    return e != nullptr && e[0] == '1';
 }
 
 static bool codegen_cycle_per_insn() {
@@ -169,6 +184,9 @@ std::string CodeGenerator::emit_mid_block_cycle_charge(uint32_t addr,
 
 std::string CodeGenerator::emit_interrupt_check(uint32_t resume_pc,
                                                 const std::string& indent) const {
+    /* TEMPORARY (2026-09-13, WO-10/WO-11 prototype): see
+     * code_generator.h's current_block_irq_elidable_ comment. */
+    if (current_block_irq_elidable_) return "";
     return std::string("#ifdef PSX_ENABLE_BLOCK_CYCLES\n") + indent +
            "psx_cyc_bb_defer_flush();\n#endif\n" + indent +
            fmt::format("psx_check_interrupts_at(cpu, 0x{:08X}u);\n", resume_pc);
@@ -176,9 +194,125 @@ std::string CodeGenerator::emit_interrupt_check(uint32_t resume_pc,
 
 std::string CodeGenerator::emit_interrupt_check_expr(const std::string& resume_pc_expr,
                                                      const std::string& indent) const {
+    if (current_block_irq_elidable_) return "";
     return std::string("#ifdef PSX_ENABLE_BLOCK_CYCLES\n") + indent +
            "psx_cyc_bb_defer_flush();\n#endif\n" + indent +
            fmt::format("psx_check_interrupts_at(cpu, {});\n", resume_pc_expr);
+}
+
+/* TEMPORARY (2026-09-13, WO-10/WO-11 prototype) — see
+ * findings/fmv-irq-batch-prototype-ai-brief.md. Duplicates (deliberately,
+ * not refactored into) the MTC0-Status/Cause + RFE scan already inline in
+ * translate_basic_block's psx_slice_block side_effects computation, to
+ * avoid touching that existing, validated codepath for this experiment. */
+bool CodeGenerator::block_side_effect_free(const BasicBlock& block) const {
+    for (uint32_t a = block.start_addr; a <= block.end_addr; a += 4) {
+        auto w = exe_.read_word(a);
+        if (!w.has_value()) break;
+        uint32_t insn = *w;
+        if ((insn >> 26) == 0x10u) {                 // COP0
+            uint32_t rs = (insn >> 21) & 0x1Fu;
+            uint32_t co = (insn >> 25) & 0x1u;
+            uint32_t funct = insn & 0x3Fu;
+            if (rs == 0x04u) return false;            // MTC0 (writes Status/Cause)
+            if (co && funct == 0x10u) return false;   // RFE
+        }
+    }
+    return true;
+}
+
+/* BasicBlock::predecessors is not populated on this generation path
+ * (verified empirically while prototyping: every block reports pred_n=0
+ * even on a real, multi-loop function) — derive it from every block's own
+ * successors instead of trusting the field. */
+std::map<uint32_t, std::vector<uint32_t>> CodeGenerator::compute_predecessors(
+    const ControlFlowGraph& cfg) const {
+    std::map<uint32_t, std::vector<uint32_t>> preds;
+    for (const auto& [addr, b] : cfg.blocks) {
+        for (uint32_t succ : b.successors) preds[succ].push_back(addr);
+    }
+    return preds;
+}
+
+/* PSX_IRQ_BATCH_LOOP: a block is elidable if it is strictly interior to a
+ * detected natural loop (cfg.loops gives (header, back_edge_source) pairs;
+ * the body is every block reachable from back_edge_source walking
+ * PREDECESSORS back to header, header itself excluded and always kept as
+ * the one per-iteration checkpoint), is not itself a (possibly nested)
+ * loop header, does not call out (jal/jalr — WO-8's cross-DLL-boundary
+ * concern), and touches no interrupt-visibility COP0 state. Worst-case
+ * added interrupt latency: one loop iteration, at the header. */
+std::set<uint32_t> CodeGenerator::compute_loop_interior_elidable(
+    const ControlFlowGraph& cfg) const {
+    std::set<uint32_t> result;
+    auto preds = compute_predecessors(cfg);
+    for (const auto& lp : cfg.loops) {
+        uint32_t header = lp.first;
+        uint32_t back_edge_src = lp.second;
+        std::set<uint32_t> body;
+        std::vector<uint32_t> stack{back_edge_src};
+        body.insert(back_edge_src);
+        while (!stack.empty()) {
+            uint32_t cur = stack.back();
+            stack.pop_back();
+            if (cur == header) continue;
+            auto pit = preds.find(cur);
+            if (pit == preds.end()) continue;
+            for (uint32_t pred : pit->second) {
+                if (body.insert(pred).second) stack.push_back(pred);
+            }
+        }
+        for (uint32_t addr : body) {
+            if (addr == header) continue;
+            auto it = cfg.blocks.find(addr);
+            if (it == cfg.blocks.end()) continue;
+            const BasicBlock& b = it->second;
+            if (b.is_loop_header) continue;   // nested loop header keeps its own check
+            if (b.exit_instr.type == ControlFlowType::JumpLink ||
+                b.exit_instr.type == ControlFlowType::JumpLinkReg) continue;
+            if (!block_side_effect_free(b)) continue;
+            result.insert(addr);
+        }
+    }
+    return result;
+}
+
+/* PSX_IRQ_BATCH_CHAIN: bounded (K=4) straight-line coalescing, independent
+ * of loop detection. A block gets depth = 1 + predecessor's depth (capped
+ * at K) only if it has exactly one predecessor, that predecessor has
+ * exactly one successor (a private, unshared fallthrough/jump edge — the
+ * only kind where nothing else could plausibly need to resume here), it is
+ * not a loop header, does not call out, and is side-effect-free; depth
+ * resets to 0 (keeps its full check) the moment any of that fails. A block
+ * is elidable iff depth > 0 — i.e. never the first block of a chain, so
+ * every chain still gets at least one real checkpoint, and the cap bounds
+ * added worst-case interrupt latency to K blocks' worth of instructions
+ * instead of an unbounded straight-line run. */
+std::map<uint32_t, int> CodeGenerator::compute_chain_depth(
+    const ControlFlowGraph& cfg) const {
+    constexpr int kMaxChain = 4;
+    std::map<uint32_t, int> depth;
+    auto preds = compute_predecessors(cfg);
+    for (uint32_t addr : cfg.block_order) {
+        auto it = cfg.blocks.find(addr);
+        if (it == cfg.blocks.end()) { depth[addr] = 0; continue; }
+        const BasicBlock& b = it->second;
+        int d = 0;
+        auto pit0 = preds.find(addr);
+        if (pit0 != preds.end() && pit0->second.size() == 1 && !b.is_loop_header &&
+            b.exit_instr.type != ControlFlowType::JumpLink &&
+            b.exit_instr.type != ControlFlowType::JumpLinkReg &&
+            block_side_effect_free(b)) {
+            uint32_t pred = pit0->second[0];
+            auto pit = cfg.blocks.find(pred);
+            if (pit != cfg.blocks.end() && pit->second.successors.size() == 1) {
+                int pd = depth.count(pred) ? depth[pred] : 0;
+                if (pd < kMaxChain) d = pd + 1;
+            }
+        }
+        depth[addr] = d;
+    }
+    return depth;
 }
 
 std::string CodeGenerator::reg_name(int reg_num) {
@@ -1750,6 +1884,22 @@ std::string CodeGenerator::translate_basic_block(
         if (dw.has_value()) block_exec_cycles += psx_instr_base_cycles(*dw);
     }
 
+    /* TEMPORARY (2026-09-13, WO-10/WO-11 prototype) — see
+     * findings/fmv-irq-batch-prototype-ai-brief.md and the
+     * current_block_irq_elidable_ comment in code_generator.h. Both flags
+     * default OFF (identical output to today); recomputed per block for a
+     * minimal diff, which is compile-time-only cost. */
+    current_block_irq_elidable_ = false;
+    if (irq_batch_loop_enabled()) {
+        auto elidable = compute_loop_interior_elidable(cfg);
+        if (elidable.count(block.start_addr)) current_block_irq_elidable_ = true;
+    }
+    if (!current_block_irq_elidable_ && irq_batch_chain_enabled()) {
+        auto chain_depth = compute_chain_depth(cfg);
+        auto it = chain_depth.find(block.start_addr);
+        if (it != chain_depth.end() && it->second > 0) current_block_irq_elidable_ = true;
+    }
+
     {
         uint32_t slice_bcyc = block_exec_cycles;
         if (slice_bcyc == 0) slice_bcyc = 1;
@@ -1766,11 +1916,16 @@ std::string CodeGenerator::translate_basic_block(
                 if (co && funct == 0x10u) slice_side_effects = 1;   // RFE
             }
         }
-        ss << "#ifdef PSX_ENABLE_BLOCK_CYCLES\n";
-        ss << config_.indent
-           << fmt::format("if (psx_slice_block(cpu, 0x{:08X}u, {}u, {})) return;\n",
-                          block.start_addr, slice_bcyc, slice_side_effects);
-        ss << "#endif\n";
+        /* TEMPORARY (2026-09-13, WO-10/WO-11 prototype): skip only the
+         * heavy slice-block call on an elidable block; slice_bcyc's cycles
+         * are still charged normally below via psx_cyc_step/psx_advance_cycles. */
+        if (!current_block_irq_elidable_) {
+            ss << "#ifdef PSX_ENABLE_BLOCK_CYCLES\n";
+            ss << config_.indent
+               << fmt::format("if (psx_slice_block(cpu, 0x{:08X}u, {}u, {})) return;\n",
+                              block.start_addr, slice_bcyc, slice_side_effects);
+            ss << "#endif\n";
+        }
     }
 
     const bool cycle_per_insn = codegen_cycle_per_insn();
@@ -1800,6 +1955,9 @@ std::string CodeGenerator::translate_basic_block(
     // leader set prevents. The game runs at its KSEG0 load address, so `insn_addr` is
     // already the runtime guest PC (matching the dirty-RAM interp's cpu->pc and Beetle).
     auto emit_pre_icache = [&](uint32_t insn_addr, const std::string& indent) {
+        /* TEMPORARY (2026-09-13, WO-10/WO-11 prototype): see
+         * current_block_irq_elidable_'s comment in code_generator.h. */
+        if (current_block_irq_elidable_) return;
         if (!(insn_addr == block.start_addr || (insn_addr & 0xCu) == 0 ||
               extra_labels_.count(insn_addr))) return;
         ss << "#ifdef PSX_ENABLE_BLOCK_CYCLES\n";

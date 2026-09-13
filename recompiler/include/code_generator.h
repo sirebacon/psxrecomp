@@ -384,6 +384,32 @@ private:
     std::string emit_interrupt_check_expr(const std::string& resume_pc_expr,
                                           const std::string& indent) const;
 
+    /* TEMPORARY (2026-09-13, WO-10/WO-11 prototype) — see
+     * findings/fmv-irq-batch-prototype-ai-brief.md. Two independent,
+     * env-gated (default OFF), per-function-recomputed strategies for
+     * marking a basic block safe to skip the heavy per-block
+     * psx_icache_fetch/psx_slice_block/psx_check_interrupts_at bookkeeping
+     * on. Neither ever elides the checkpoint block itself (a loop's own
+     * header, or a chain's first member) — only interior/follow-on blocks
+     * — so added worst-case interrupt latency stays bounded to one loop
+     * iteration (PSX_IRQ_BATCH_LOOP) or a short capped straight-line run
+     * (PSX_IRQ_BATCH_CHAIN), never "the whole function". Read by
+     * emit_interrupt_check(_expr) and the two inline emission sites in
+     * translate_basic_block; set once per block at the top of that
+     * function. Recomputing per block is compile-time-only cost (this
+     * runs once per game build, not per game launch) — not optimized for
+     * that, deliberately, to keep the prototype's diff small. */
+    bool current_block_irq_elidable_ = false;
+    bool block_side_effect_free(const BasicBlock& block) const;
+    /* This generation path (isolated/interior fragments) never populates
+     * BasicBlock::predecessors (verified empirically: pred_n=0 on every
+     * block of a real function during prototyping) — derive it ourselves
+     * from successors instead of trusting the field. */
+    std::map<uint32_t, std::vector<uint32_t>> compute_predecessors(
+        const ControlFlowGraph& cfg) const;
+    std::set<uint32_t> compute_loop_interior_elidable(const ControlFlowGraph& cfg) const;
+    std::map<uint32_t, int> compute_chain_depth(const ControlFlowGraph& cfg) const;
+
 public:
     bool cps_enabled() const { return cps_enabled_; }
     // continuation_addr -> owning function entry (CPS dispatch routing).

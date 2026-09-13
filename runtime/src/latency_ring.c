@@ -11,6 +11,17 @@
 typedef struct {
     uint64_t ts[LAT_STAGE_COUNT];
     uint64_t frame;
+    /* TEMPORARY (2026-09-12 FMV-dip investigation) — see latency_ring.h. */
+    double   cd_read_max_us;
+    uint32_t cd_read_lba;
+    uint32_t cd_read_count;
+    double   mdec_max_us;
+    uint32_t mdec_count;
+    double   xa_max_us;
+    uint32_t xa_count;
+    double   dispatch_max_us;
+    uint32_t dispatch_max_addr;
+    uint32_t dispatch_count;
 } LatSlot;
 
 static LatSlot   s_ring[LAT_RING_SIZE];
@@ -52,6 +63,68 @@ void latency_ring_set_backend(const char *name) {
 }
 
 void latency_ring_set_present_mode(int mode) { s_present_mode = mode; }
+
+/* TEMPORARY (2026-09-12 FMV-dip investigation) — see latency_ring.h. */
+uint64_t latency_ring_cd_read_begin(void) { return qpc(); }
+
+void latency_ring_cd_read_end(uint64_t start_ticks, uint32_t lba) {
+    if (s_head == 0) return;
+    uint64_t end_ticks = qpc();
+    double us = (end_ticks > start_ticks)
+        ? (double)(end_ticks - start_ticks) * (1.0e6 / qpc_freq())
+        : 0.0;
+    LatSlot *s = &s_ring[(s_head - 1) % LAT_RING_SIZE];
+    s->cd_read_count++;
+    if (us > s->cd_read_max_us) {
+        s->cd_read_max_us = us;
+        s->cd_read_lba = lba;
+    }
+}
+
+/* TEMPORARY (2026-09-12 FMV-dip investigation, Phase 2) — see latency_ring.h. */
+uint64_t latency_ring_mdec_begin(void) { return qpc(); }
+
+void latency_ring_mdec_end(uint64_t start_ticks) {
+    if (s_head == 0) return;
+    uint64_t end_ticks = qpc();
+    double us = (end_ticks > start_ticks)
+        ? (double)(end_ticks - start_ticks) * (1.0e6 / qpc_freq())
+        : 0.0;
+    LatSlot *s = &s_ring[(s_head - 1) % LAT_RING_SIZE];
+    s->mdec_count++;
+    if (us > s->mdec_max_us) s->mdec_max_us = us;
+}
+
+uint64_t latency_ring_xa_begin(void) { return qpc(); }
+
+void latency_ring_xa_end(uint64_t start_ticks) {
+    if (s_head == 0) return;
+    uint64_t end_ticks = qpc();
+    double us = (end_ticks > start_ticks)
+        ? (double)(end_ticks - start_ticks) * (1.0e6 / qpc_freq())
+        : 0.0;
+    LatSlot *s = &s_ring[(s_head - 1) % LAT_RING_SIZE];
+    s->xa_count++;
+    if (us > s->xa_max_us) s->xa_max_us = us;
+}
+
+/* TEMPORARY (2026-09-12 FMV-dip investigation, Phase 2 continued) — see
+ * latency_ring.h. */
+uint64_t latency_ring_dispatch_begin(void) { return qpc(); }
+
+void latency_ring_dispatch_end(uint64_t start_ticks, uint32_t addr) {
+    if (s_head == 0) return;
+    uint64_t end_ticks = qpc();
+    double us = (end_ticks > start_ticks)
+        ? (double)(end_ticks - start_ticks) * (1.0e6 / qpc_freq())
+        : 0.0;
+    LatSlot *s = &s_ring[(s_head - 1) % LAT_RING_SIZE];
+    s->dispatch_count++;
+    if (us > s->dispatch_max_us) {
+        s->dispatch_max_us = us;
+        s->dispatch_max_addr = addr;
+    }
+}
 
 /* Collect a delta series (in microseconds) over the last `window` completed
  * frames into `out`, returning the count. `a`/`b` are the two stages whose
@@ -156,8 +229,12 @@ int latency_ring_dump_json(char *buf, int buf_size, int max_frames) {
         double tsb = s->ts[LAT_SWAP_BEGIN] ? (double)(s->ts[LAT_SWAP_BEGIN] - base) * inv_us : -1;
         double tse = s->ts[LAT_SWAP_END]   ? (double)(s->ts[LAT_SWAP_END]   - base) * inv_us : -1;
         off += snprintf(buf + off, buf_size - off,
-            "%s{\"f\":%llu,\"input\":%.1f,\"paced\":%.1f,\"swap_begin\":%.1f,\"swap_end\":%.1f}",
-            (f == start ? "" : ","), (unsigned long long)s->frame, ti, tp, tsb, tse);
+            "%s{\"f\":%llu,\"input\":%.1f,\"paced\":%.1f,\"swap_begin\":%.1f,\"swap_end\":%.1f,"
+            "\"cd_reads\":%u,\"cd_max_us\":%.1f,"
+            "\"disp_n\":%u,\"disp_max_us\":%.1f,\"disp_addr\":\"0x%08X\"}",
+            (f == start ? "" : ","), (unsigned long long)s->frame, ti, tp, tsb, tse,
+            s->cd_read_count, s->cd_read_max_us,
+            s->dispatch_count, s->dispatch_max_us, s->dispatch_max_addr);
         if (buf_size - off < 128) break;
     }
     off += snprintf(buf + off, buf_size - off, "]");

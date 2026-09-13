@@ -1,5 +1,6 @@
 #include "overlay_loader.h"
 #include "overlay_api.h"
+#include "latency_ring.h" /* TEMPORARY (2026-09-12 FMV-dip investigation, Phase 2) */
 #include "overlay_path_canon.h"
 #include "code_provider.h"
 #include "overlay_backend.h"
@@ -3638,7 +3639,10 @@ retry_candidates:
                     int prev_phase = g_exec_phase;
                     OverlayFlushFn prev_flush = overlay_flush_enter(c);
                     g_exec_phase = 2;
+                    /* TEMPORARY (2026-09-12 FMV-dip investigation, Phase 2). */
+                    uint64_t __disp_t0 = latency_ring_dispatch_begin();
                     c->fn(cpu);
+                    latency_ring_dispatch_end(__disp_t0, addr);
                     overlay_flush_leave(prev_flush);
                     g_exec_phase = prev_phase;
                 }
@@ -3784,7 +3788,10 @@ retry_candidates:
                 int prev_phase = g_exec_phase;
                 OverlayFlushFn prev_flush = overlay_flush_enter(c);
                 g_exec_phase = 2;
+                /* TEMPORARY (2026-09-12 FMV-dip investigation, Phase 2). */
+                uint64_t __disp_t0 = latency_ring_dispatch_begin();
                 c->fn(cpu);
+                latency_ring_dispatch_end(__disp_t0, c->addr);
                 overlay_flush_leave(prev_flush);
                 g_exec_phase = prev_phase;
             }

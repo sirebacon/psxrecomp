@@ -2,6 +2,7 @@
 #include "psx_align.h"
 #include "pst_wire.h"
 #include "psx_cycles.h"
+#include "latency_ring.h" /* TEMPORARY (2026-09-12 FMV-dip investigation, Phase 2) */
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -718,7 +719,10 @@ static void execute_command(void) {
             mdec.scale[t] = (int16_t)((int16_t)mdec.input[i] >> 3);
         }
     } else if (op == MDEC_CMD_DECODE) {
+        /* TEMPORARY (2026-09-12 FMV-dip investigation, Phase 2). */
+        uint64_t __mdec_t0 = latency_ring_mdec_begin();
         execute_decode();
+        latency_ring_mdec_end(__mdec_t0);
     }
 
     finish_command();
