@@ -19,8 +19,22 @@
 #define PSX_OVERLAY_FLAVOR 0
 #endif
 
-static char s_cmd[4096];   /* large: the runtime-constructed bundled tcc cmd has
-                            * many absolute paths (python+script+recompiler+tcc+...) */
+/* 8192: large enough for the runtime-constructed bundled tcc cmd (many
+ * absolute paths: python+script+recompiler+tcc+...) AND a long
+ * --force-interior list (each entry ~28 bytes; a real title has needed 208
+ * of them = 6,392 bytes total, confirmed via play.log). Previously 4096,
+ * which silently truncated (via snprintf below) any command past that,
+ * cutting a --force-interior flag list off mid-argument and making every
+ * autocompile invocation fail argparse ("--force-interior: expected one
+ * argument") -- confirmed 2026-09-15, see
+ * findings/autocompile-cmd-buffer-overflow-2026-09-15.md in
+ * psxrecomp-decomp-bridge. 8192 is chosen to sit just under cmd.exe's own
+ * ~8191-character practical command-line ceiling (see the `full` buffer
+ * below, which wraps this one) rather than an arbitrary round number --
+ * growing much past this needs a different invocation mechanism (e.g. an
+ * @file-style argument file), not a bigger fixed buffer, since cmd.exe
+ * itself would start rejecting the line first. */
+static char s_cmd[8192];
 static char s_cwd[512];
 /* Canonical loader cache dir + captures file (see autocompile_set_cache_paths).
  * Injected into the compile child's environment so its WRITE location is exactly
@@ -879,7 +893,9 @@ int autocompile_request(void) {
      * is incorrect" — every autocompile run failed and the reshard silently
      * never happened). With the outer quotes cmd strips exactly those two and
      * executes the inner command verbatim. */
-    char full[4200];
+    /* Sized to hold s_cmd plus the "cmd.exe /C \"...\"" wrapper (14 bytes of
+     * fixed overhead) with headroom; grows in lockstep with s_cmd above. */
+    char full[sizeof(s_cmd) + 32];
     snprintf(full, sizeof(full), "cmd.exe /C \"%s\"", s_cmd);
 
     STARTUPINFOA si;
