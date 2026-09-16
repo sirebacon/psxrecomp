@@ -19,8 +19,18 @@
 #define PSX_OVERLAY_FLAVOR 0
 #endif
 
-static char s_cmd[4096];   /* large: the runtime-constructed bundled tcc cmd has
-                            * many absolute paths (python+script+recompiler+tcc+...) */
+static char s_cmd[8192];   /* large: the runtime-constructed bundled tcc cmd has
+                            * many absolute paths (python+script+recompiler+tcc+...).
+                            * Was 4096: a long --force-interior list (this repo's
+                            * own play.ps1 default, hundreds of addresses) silently
+                            * truncated at 4096, producing a broken argv that fails
+                            * argparse and permanently latches autocompile into a
+                            * degraded state after 3 consecutive failures (confirmed
+                            * live, 2026-09-16 -- adding 22 more addresses to an
+                            * already-long list re-triggered this exact bug on this
+                            * pin). 8192 fits under cmd.exe's ~8191-char practical
+                            * command-line ceiling; see `full` below, which must
+                            * scale with this or become the new truncation point. */
 static char s_cwd[512];
 /* Canonical loader cache dir + captures file (see autocompile_set_cache_paths).
  * Injected into the compile child's environment so its WRITE location is exactly
@@ -879,7 +889,7 @@ int autocompile_request(void) {
      * is incorrect" — every autocompile run failed and the reshard silently
      * never happened). With the outer quotes cmd strips exactly those two and
      * executes the inner command verbatim. */
-    char full[4200];
+    char full[sizeof(s_cmd) + 32];
     snprintf(full, sizeof(full), "cmd.exe /C \"%s\"", s_cmd);
 
     STARTUPINFOA si;
