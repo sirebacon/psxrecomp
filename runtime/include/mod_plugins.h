@@ -295,6 +295,25 @@ int psx_mod_menu_add_dynamic_choice(const char* page, const char* label,
                                     PSXModMenuChoiceCount count_fn,
                                     PSXModMenuChoiceName name_fn);
 
+/*
+ * "Live" number and choice rows: instead of a plugin-owned int, the menu calls
+ * get() whenever it shows the row and set() when the player changes it, so
+ * the row can read and write game state directly and every change takes
+ * effect immediately (the guest is paused while the menu is open). set()
+ * returns non-zero if it accepted the value; it is only called with values in
+ * [minimum, maximum] (choices: [0, count-1]).
+ */
+typedef int (*PSXModMenuGet)(void);
+typedef int (*PSXModMenuSet)(int value);
+int psx_mod_menu_add_live_int(const char* page, const char* label,
+                              const char* description, int minimum,
+                              int maximum, int step,
+                              PSXModMenuGet get, PSXModMenuSet set);
+int psx_mod_menu_add_live_choice(const char* page, const char* label,
+                                 const char* description,
+                                 const char* const* choices, uint32_t count,
+                                 PSXModMenuGet get, PSXModMenuSet set);
+
 /* Short on-screen toast (e.g. to confirm a menu action). Plain ASCII text. */
 void psx_mod_osd_message(const char* text);
 
@@ -322,6 +341,9 @@ int psx_mod_menu_item_info(uint32_t index, PSXModMenuItemInfo* out);
 int psx_mod_menu_item_get(uint32_t index, int* value_out);
 int psx_mod_menu_item_set(uint32_t index, int value);
 int psx_mod_menu_item_run(uint32_t index);
+/* Re-read every dynamic choice list; the host calls this when the menu opens,
+ * since what a list shows (e.g. the equipped item) can change in play. */
+void psx_mod_menu_refresh(void);
 
 /*
  * Register a C plugin before main() on the compilers supported by the runtime.

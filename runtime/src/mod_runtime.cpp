@@ -1440,6 +1440,8 @@ struct MenuItem {
     int step = 1;
     int* storage = nullptr;
     PSXModMenuAction action = nullptr;
+    PSXModMenuGet live_get = nullptr;   /* live rows: no storage */
+    PSXModMenuSet live_set = nullptr;
     const char* const* choices = nullptr;
     uint32_t choice_count = 0;
     /* Dynamic choices: choices points into dyn_names, sized once to
@@ -1571,6 +1573,40 @@ extern "C" int psx_mod_menu_add_choice(const char* page, const char* label,
     return menu_add(std::move(item), page, label, description);
 }
 
+extern "C" int psx_mod_menu_add_live_int(const char* page, const char* label,
+                                         const char* description, int minimum,
+                                         int maximum, int step,
+                                         PSXModMenuGet get, PSXModMenuSet set) {
+    if (!get || !set || maximum <= minimum || step <= 0) return 0;
+    MenuItem item;
+    item.kind = PSX_MOD_MENU_INT;
+    item.minimum = minimum;
+    item.maximum = maximum;
+    item.step = step;
+    item.live_get = get;
+    item.live_set = set;
+    return menu_add(std::move(item), page, label, description);
+}
+
+extern "C" int psx_mod_menu_add_live_choice(const char* page, const char* label,
+                                            const char* description,
+                                            const char* const* choices,
+                                            uint32_t count, PSXModMenuGet get,
+                                            PSXModMenuSet set) {
+    if (!get || !set || !choices || count == 0) return 0;
+    for (uint32_t i = 0; i < count; ++i)
+        if (!choices[i]) return 0;
+    MenuItem item;
+    item.kind = PSX_MOD_MENU_CHOICE;
+    item.minimum = 0;
+    item.maximum = (int)count - 1;
+    item.choices = choices;
+    item.choice_count = count;
+    item.live_get = get;
+    item.live_set = set;
+    return menu_add(std::move(item), page, label, description);
+}
+
 extern "C" uint32_t psx_mod_menu_item_count(void) {
     return (uint32_t)menu_items().size();
 }
@@ -1594,16 +1630,27 @@ extern "C" int psx_mod_menu_item_info(uint32_t index, PSXModMenuItemInfo* out) {
 
 extern "C" int psx_mod_menu_item_get(uint32_t index, int* value_out) {
     auto& items = menu_items();
-    if (!value_out || index >= items.size() || !items[index].storage) return 0;
+    if (!value_out || index >= items.size()) return 0;
+    if (items[index].live_get) {
+        *value_out = items[index].live_get();
+        return 1;
+    }
+    if (!items[index].storage) return 0;
     *value_out = *items[index].storage;
     return 1;
 }
 
 extern "C" int psx_mod_menu_item_set(uint32_t index, int value) {
     auto& items = menu_items();
-    if (index >= items.size() || !items[index].storage) return 0;
+    if (index >= items.size()) return 0;
     MenuItem& item = items[index];
     if (value < item.minimum || value > item.maximum) return 0;
+    if (item.live_set) {
+        const int accepted = item.live_set(value) != 0;
+        menu_refresh_dynamic();
+        return accepted;
+    }
+    if (!item.storage) return 0;
     if (item.dyn_count_fn) {
         /* The menu wraps over the fixed max length; fold that onto the live
          * list: stepping forward past the end -> 0, back from 0 -> last. */
@@ -1614,6 +1661,10 @@ extern "C" int psx_mod_menu_item_set(uint32_t index, int value) {
     *item.storage = value;
     menu_refresh_dynamic();
     return 1;
+}
+
+extern "C" void psx_mod_menu_refresh(void) {
+    menu_refresh_dynamic();
 }
 
 extern "C" int psx_mod_menu_item_run(uint32_t index) {

@@ -6386,6 +6386,7 @@ static void runtime_settings_menu_toggle(SDL_Keycode opened_by_key) {
 #if defined(RECOMP_LAUNCHER)
     runtime_settings_ui_ensure_created();
     if (g_runtime_settings_ui) {
+        psx_mod_menu_refresh(); /* mod lists may depend on what changed in play */
         runtime_settings_menu_open_key = opened_by_key;
         recomp_runtime_ui_open(g_runtime_settings_ui);
         runtime_settings_menu_sync_overlay();
