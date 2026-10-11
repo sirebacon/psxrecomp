@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <iomanip>
 #include <map>
@@ -1425,6 +1426,112 @@ extern "C" void psx_mod_function_entry(CPUState* cpu, uint32_t address) {
     for (const FunctionEntryPlugin& plugin : function_entry_plugins()) {
         if (plugin.address == address) plugin.callback(cpu, address);
     }
+}
+
+namespace {
+
+struct MenuItem {
+    std::string label;
+    std::string description;
+    int kind = PSX_MOD_MENU_BOOL;
+    int minimum = 0;
+    int maximum = 1;
+    int step = 1;
+    int* storage = nullptr;
+    PSXModMenuAction action = nullptr;
+};
+
+/* A deque keeps the std::string buffers (and so the const char* handed to the
+ * host menu) stable as rows are appended. */
+std::deque<MenuItem>& menu_items() {
+    static std::deque<MenuItem> items;
+    return items;
+}
+
+constexpr size_t kMenuItemMax = 128;
+
+int menu_add(MenuItem item, const char* label, const char* description) {
+    if (!label || !*label) return 0;
+    auto& items = menu_items();
+    if (items.size() >= kMenuItemMax) return 0;
+    item.label = label;
+    item.description = description ? description : "";
+    items.push_back(std::move(item));
+    return 1;
+}
+
+} // namespace
+
+extern "C" int psx_mod_menu_add_bool(const char* label, const char* description,
+                                     int* flag) {
+    if (!flag) return 0;
+    MenuItem item;
+    item.kind = PSX_MOD_MENU_BOOL;
+    item.storage = flag;
+    return menu_add(std::move(item), label, description);
+}
+
+extern "C" int psx_mod_menu_add_int(const char* label, const char* description,
+                                    int* value, int minimum, int maximum,
+                                    int step) {
+    if (!value || maximum <= minimum || step <= 0) return 0;
+    MenuItem item;
+    item.kind = PSX_MOD_MENU_INT;
+    item.minimum = minimum;
+    item.maximum = maximum;
+    item.step = step;
+    item.storage = value;
+    return menu_add(std::move(item), label, description);
+}
+
+extern "C" int psx_mod_menu_add_action(const char* label,
+                                       const char* description,
+                                       PSXModMenuAction callback) {
+    if (!callback) return 0;
+    MenuItem item;
+    item.kind = PSX_MOD_MENU_ACTION;
+    item.action = callback;
+    return menu_add(std::move(item), label, description);
+}
+
+extern "C" uint32_t psx_mod_menu_item_count(void) {
+    return (uint32_t)menu_items().size();
+}
+
+extern "C" int psx_mod_menu_item_info(uint32_t index, PSXModMenuItemInfo* out) {
+    auto& items = menu_items();
+    if (!out || index >= items.size()) return 0;
+    const MenuItem& item = items[index];
+    out->label = item.label.c_str();
+    out->description = item.description.c_str();
+    out->kind = item.kind;
+    out->minimum = item.minimum;
+    out->maximum = item.maximum;
+    out->step = item.step;
+    return 1;
+}
+
+extern "C" int psx_mod_menu_item_get(uint32_t index, int* value_out) {
+    auto& items = menu_items();
+    if (!value_out || index >= items.size() || !items[index].storage) return 0;
+    *value_out = *items[index].storage;
+    return 1;
+}
+
+extern "C" int psx_mod_menu_item_set(uint32_t index, int value) {
+    auto& items = menu_items();
+    if (index >= items.size() || !items[index].storage) return 0;
+    MenuItem& item = items[index];
+    if (value < item.minimum || value > item.maximum) return 0;
+    *item.storage = value;
+    return 1;
+}
+
+extern "C" int psx_mod_menu_item_run(uint32_t index) {
+    auto& items = menu_items();
+    if (index >= items.size() || !items[index].action) return 0;
+    items[index].action();
+    return 1;
 }
 
 extern "C" void mod_runtime_patch_disc_sector(uint32_t lba, int raw_sector,

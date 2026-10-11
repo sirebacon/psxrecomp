@@ -241,6 +241,55 @@ int psx_mod_set_controller_presentation_policy(
     int config_capable);
 
 /*
+ * In-game menu items. A trusted plugin adds rows to the runtime's pause menu
+ * (the F1 "Runtime settings" menu), all under one
+ * "Mods" heading that only appears once a plugin adds a row. The menu pauses the guest at a VBlank boundary, works over
+ * FMVs, and keeps its input away from the game -- plugins get that for free
+ * instead of drawing their own overlay.
+ *
+ * Call from a PSX_MOD_CONSTRUCTOR; the registry is function-local so constructor
+ * order does not matter. The menu is built lazily on its first open, so every
+ * row registered before then appears. Strings are copied. Integer/boolean
+ * storage stays owned by the plugin and must outlive the process (use a static).
+ *
+ * Callbacks run on the emulation thread with the guest paused, so
+ * the psx_mod_read and psx_mod_write functions are safe inside an action.
+ *
+ * Each add function returns 1 on success, 0 on bad arguments or a full registry.
+ */
+typedef void (*PSXModMenuAction)(void);
+int psx_mod_menu_add_bool(const char* label, const char* description,
+                          int* flag);
+int psx_mod_menu_add_int(const char* label, const char* description,
+                         int* value, int minimum, int maximum, int step);
+int psx_mod_menu_add_action(const char* label, const char* description,
+                            PSXModMenuAction callback);
+
+/* Short on-screen toast (e.g. to confirm a menu action). Plain ASCII text. */
+void psx_mod_osd_message(const char* text);
+
+/* Host side: lets the runtime menu enumerate and drive the registered rows. */
+enum {
+    PSX_MOD_MENU_BOOL = 0,
+    PSX_MOD_MENU_INT = 1,
+    PSX_MOD_MENU_ACTION = 2
+};
+typedef struct PSXModMenuItemInfo {
+    const char* label;
+    const char* description;
+    int kind;
+    int minimum;
+    int maximum;
+    int step;
+} PSXModMenuItemInfo;
+uint32_t psx_mod_menu_item_count(void);
+/* Returns 0 if index is out of range. */
+int psx_mod_menu_item_info(uint32_t index, PSXModMenuItemInfo* out);
+int psx_mod_menu_item_get(uint32_t index, int* value_out);
+int psx_mod_menu_item_set(uint32_t index, int value);
+int psx_mod_menu_item_run(uint32_t index);
+
+/*
  * Register a C plugin before main() on the compilers supported by the runtime.
  * The registry itself uses function-local initialization, so constructor order
  * between game sources and the framework is safe.

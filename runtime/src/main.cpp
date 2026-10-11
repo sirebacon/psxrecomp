@@ -133,6 +133,7 @@ extern "C" void psx_game_codegen_forward_if_built(int argc, char** argv);
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <deque>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -6047,6 +6048,11 @@ static SDL_Keycode runtime_settings_menu_open_key = 0;
 static void runtime_settings_menu_sync_overlay(void);
 static void controller_port_route_toggle(void);
 
+/* Toast for trusted plugins (menu actions have no other way to report). */
+extern "C" void psx_mod_osd_message(const char *text) {
+    if (text && *text) host_osd_push(text, 2200);
+}
+
 #if defined(RECOMP_LAUNCHER)
 static RecompRuntimeUi *g_runtime_settings_ui;
 
@@ -6060,9 +6066,21 @@ static const char kRuntimeDiscChange[] = "psx.disc_change";
 static const char kRuntimeDiscReinsert[] = "psx.disc_reinsert";
 static const char *const kControllerRouteChoices[] = { "Port 1", "Port 2" };
 
+static const char kRuntimeModKeyPrefix[] = "mod.";
+
+/* "mod.<index>" -> registry index, or -1 for any other key. */
+static int runtime_ui_mod_index(const char *key) {
+    const size_t n = sizeof(kRuntimeModKeyPrefix) - 1;
+    if (std::strncmp(key, kRuntimeModKeyPrefix, n) != 0) return -1;
+    return std::atoi(key + n);
+}
+
 static int runtime_ui_get_value(void*, const RecompRuntimeUiItem *item,
                                 int *value_out) {
     if (!item || !item->key || !value_out) return 0;
+    const int mod_index = runtime_ui_mod_index(item->key);
+    if (mod_index >= 0)
+        return psx_mod_menu_item_get((uint32_t)mod_index, value_out);
     if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_FULLSCREEN) == 0)
         *value_out = g_fullscreen;
     else if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_WINDOW_SCALE) == 0)
@@ -6083,6 +6101,9 @@ static int runtime_ui_get_value(void*, const RecompRuntimeUiItem *item,
 static int runtime_ui_set_value(void*, const RecompRuntimeUiItem *item,
                                 int value) {
     if (!item || !item->key) return 0;
+    const int mod_index = runtime_ui_mod_index(item->key);
+    if (mod_index >= 0)
+        return psx_mod_menu_item_set((uint32_t)mod_index, value);
     if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_FULLSCREEN) == 0) {
         if (value < 0 || value > 2) return 0;
         g_fullscreen = value;
@@ -6196,6 +6217,9 @@ static int runtime_ui_run_action(void *opaque,
                                  const RecompRuntimeUiItem *item) {
     auto *context = static_cast<PsxRuntimeUiContext*>(opaque);
     if (!item || !item->key) return 0;
+    const int mod_index = runtime_ui_mod_index(item->key);
+    if (mod_index >= 0)
+        return psx_mod_menu_item_run((uint32_t)mod_index);
     if (std::strcmp(item->key, RECOMP_RUNTIME_UI_KEY_RESUME) == 0) {
         if (context && context->ui) recomp_runtime_ui_close(context->ui);
         return 1;
@@ -6231,7 +6255,11 @@ static void runtime_ui_visibility_changed(void*, int open) {
 static void runtime_settings_ui_ensure_created(void) {
     if (g_runtime_settings_ui) return;
 
-    static const RecompRuntimeUiItem extras[] = {
+    /* The menu keeps pointers into these, so they live for the process. Built
+     * once, on first open, after every plugin constructor has registered. */
+    static std::vector<RecompRuntimeUiItem> extras;
+    static std::deque<std::string> extra_keys;
+    extras = {
         { kRuntimeControllerRoute, "Input", "Controller 1 route",
           "Move host controller 1 between console ports without restarting.",
           RECOMP_RUNTIME_UI_CHOICE, 0, 1, 1, kControllerRouteChoices, 2,
@@ -6243,6 +6271,28 @@ static void runtime_settings_ui_ensure_created(void) {
           "Signal a tray-open/close cycle without changing the mounted image.",
           RECOMP_RUNTIME_UI_ACTION, 0, 0, 0, nullptr, 0, nullptr },
     };
+
+    /* Rows added by plugins, all under one "Mods" heading. With no plugin rows
+     * the heading never appears. */
+    const uint32_t mod_count = psx_mod_menu_item_count();
+    for (uint32_t i = 0; i < mod_count; ++i) {
+        PSXModMenuItemInfo info;
+        if (!psx_mod_menu_item_info(i, &info)) continue;
+        extra_keys.push_back(std::string(kRuntimeModKeyPrefix) +
+                             std::to_string(i));
+        RecompRuntimeUiItem item{};
+        item.key = extra_keys.back().c_str();
+        item.section = "Mods";
+        item.label = info.label;
+        item.description = info.description;
+        item.type = info.kind == PSX_MOD_MENU_ACTION ? RECOMP_RUNTIME_UI_ACTION
+                  : info.kind == PSX_MOD_MENU_INT    ? RECOMP_RUNTIME_UI_INT
+                                                     : RECOMP_RUNTIME_UI_BOOL;
+        item.minimum = info.minimum;
+        item.maximum = info.maximum;
+        item.step = info.step;
+        extras.push_back(item);
+    }
 
     RecompRuntimeUiStandardConfig config{};
     config.menu.title = "Runtime settings";
@@ -6265,8 +6315,8 @@ static void runtime_settings_ui_ensure_created(void) {
         RECOMP_RUNTIME_UI_STANDARD_VOLUME |
         RECOMP_RUNTIME_UI_STANDARD_RESUME;
     config.window_scale_max = 4;
-    config.extra_items = extras;
-    config.extra_item_count = sizeof(extras) / sizeof(extras[0]);
+    config.extra_items = extras.data();
+    config.extra_item_count = extras.size();
     g_runtime_settings_ui = recomp_runtime_ui_create_standard(&config);
     g_runtime_ui_context.ui = g_runtime_settings_ui;
     psx_savestate_menu_set_runtime_ui(g_runtime_settings_ui);
