@@ -6827,6 +6827,9 @@ static void runtime_settings_menu_host_pause_loop(void) {
         }
         runtime_settings_menu_poll_nav();
         rewind_pause_present();
+        /* The other pause loops feed this; without it an open menu starves the
+         * watchdog and the runtime aborts after a few seconds. */
+        starvation_watchdog_heartbeat();
         SDL_Delay(8);
     }
     savestate_input_guard_arm();
