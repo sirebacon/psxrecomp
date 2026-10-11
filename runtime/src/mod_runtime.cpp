@@ -1431,6 +1431,7 @@ extern "C" void psx_mod_function_entry(CPUState* cpu, uint32_t address) {
 namespace {
 
 struct MenuItem {
+    std::string page;   /* plugin page path, validated: "A" or "A/B/..." */
     std::string label;
     std::string description;
     int kind = PSX_MOD_MENU_BOOL;
@@ -1459,10 +1460,20 @@ std::deque<MenuItem>& menu_items() {
 
 constexpr size_t kMenuItemMax = 128;
 
-int menu_add(MenuItem item, const char* label, const char* description) {
-    if (!label || !*label) return 0;
+/* A page is one or more non-empty '/'-separated names. */
+bool menu_page_valid(const char* page) {
+    if (!page || !*page || *page == '/') return false;
+    for (const char* p = page; *p; ++p)
+        if (*p == '/' && (p[1] == '/' || p[1] == '\0')) return false;
+    return true;
+}
+
+int menu_add(MenuItem item, const char* page, const char* label,
+             const char* description) {
+    if (!label || !*label || !menu_page_valid(page)) return 0;
     auto& items = menu_items();
     if (items.size() >= kMenuItemMax) return 0;
+    item.page = page;
     item.label = label;
     item.description = description ? description : "";
     items.push_back(std::move(item));
@@ -1492,7 +1503,7 @@ void menu_refresh_dynamic() {
 } // namespace
 
 extern "C" int psx_mod_menu_add_dynamic_choice(
-    const char* label, const char* description, int* value,
+    const char* page, const char* label, const char* description, int* value,
     uint32_t max_count, PSXModMenuChoiceCount count_fn,
     PSXModMenuChoiceName name_fn) {
     if (!value || max_count == 0 || !count_fn || !name_fn) return 0;
@@ -1505,22 +1516,22 @@ extern "C" int psx_mod_menu_add_dynamic_choice(
     item.dyn_count_fn = count_fn;
     item.dyn_name_fn = name_fn;
     item.dyn_names.assign(max_count, "");
-    if (!menu_add(std::move(item), label, description)) return 0;
+    if (!menu_add(std::move(item), page, label, description)) return 0;
     MenuItem& added = menu_items().back();
     added.choices = added.dyn_names.data();
     return 1;
 }
 
-extern "C" int psx_mod_menu_add_bool(const char* label, const char* description,
+extern "C" int psx_mod_menu_add_bool(const char* page, const char* label, const char* description,
                                      int* flag) {
     if (!flag) return 0;
     MenuItem item;
     item.kind = PSX_MOD_MENU_BOOL;
     item.storage = flag;
-    return menu_add(std::move(item), label, description);
+    return menu_add(std::move(item), page, label, description);
 }
 
-extern "C" int psx_mod_menu_add_int(const char* label, const char* description,
+extern "C" int psx_mod_menu_add_int(const char* page, const char* label, const char* description,
                                     int* value, int minimum, int maximum,
                                     int step) {
     if (!value || maximum <= minimum || step <= 0) return 0;
@@ -1530,20 +1541,20 @@ extern "C" int psx_mod_menu_add_int(const char* label, const char* description,
     item.maximum = maximum;
     item.step = step;
     item.storage = value;
-    return menu_add(std::move(item), label, description);
+    return menu_add(std::move(item), page, label, description);
 }
 
-extern "C" int psx_mod_menu_add_action(const char* label,
+extern "C" int psx_mod_menu_add_action(const char* page, const char* label,
                                        const char* description,
                                        PSXModMenuAction callback) {
     if (!callback) return 0;
     MenuItem item;
     item.kind = PSX_MOD_MENU_ACTION;
     item.action = callback;
-    return menu_add(std::move(item), label, description);
+    return menu_add(std::move(item), page, label, description);
 }
 
-extern "C" int psx_mod_menu_add_choice(const char* label,
+extern "C" int psx_mod_menu_add_choice(const char* page, const char* label,
                                        const char* description, int* value,
                                        const char* const* choices,
                                        uint32_t count) {
@@ -1557,7 +1568,7 @@ extern "C" int psx_mod_menu_add_choice(const char* label,
     item.storage = value;
     item.choices = choices;
     item.choice_count = count;
-    return menu_add(std::move(item), label, description);
+    return menu_add(std::move(item), page, label, description);
 }
 
 extern "C" uint32_t psx_mod_menu_item_count(void) {
@@ -1569,6 +1580,7 @@ extern "C" int psx_mod_menu_item_info(uint32_t index, PSXModMenuItemInfo* out) {
     if (!out || index >= items.size()) return 0;
     if (index == 0) menu_refresh_dynamic(); /* the menu enumerates from 0 */
     const MenuItem& item = items[index];
+    out->page = item.page.c_str();
     out->label = item.label.c_str();
     out->description = item.description.c_str();
     out->kind = item.kind;

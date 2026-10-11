@@ -242,10 +242,18 @@ int psx_mod_set_controller_presentation_policy(
 
 /*
  * In-game menu items. A trusted plugin adds rows to the runtime's pause menu
- * (the F1 "Runtime settings" menu), all under one
- * "Mods" heading that only appears once a plugin adds a row. The menu pauses the guest at a VBlank boundary, works over
- * FMVs, and keeps its input away from the game -- plugins get that for free
- * instead of drawing their own overlay.
+ * (the F1 "Runtime settings" menu). Every row lives on a page the plugin
+ * names, and every page sits under "Mods", so each mod gets its own entry
+ * next to other people's mods:
+ *
+ *     page "My Mod"              ->  Mods > My Mod > (row)
+ *     page "My Mod/Item Editor"  ->  Mods > My Mod > Item Editor > (row)
+ *
+ * Pages are '/'-separated paths; a sub-page shows up as a folder row inside
+ * its parent, at the position of its first row. "Mods" only appears once a
+ * plugin adds a row. The menu pauses the guest at a VBlank boundary, works
+ * over FMVs, and keeps its input away from the game -- plugins get that for
+ * free instead of drawing their own overlay.
  *
  * Call from a PSX_MOD_CONSTRUCTOR; the registry is function-local so constructor
  * order does not matter. The menu is built lazily on its first open, so every
@@ -255,21 +263,23 @@ int psx_mod_set_controller_presentation_policy(
  * Callbacks run on the emulation thread with the guest paused, so
  * the psx_mod_read and psx_mod_write functions are safe inside an action.
  *
- * Each add function returns 1 on success, 0 on bad arguments or a full registry.
+ * Each add function returns 1 on success, 0 on bad arguments (including an
+ * empty page or one with empty path components) or a full registry.
  */
 typedef void (*PSXModMenuAction)(void);
-int psx_mod_menu_add_bool(const char* label, const char* description,
-                          int* flag);
-int psx_mod_menu_add_int(const char* label, const char* description,
-                         int* value, int minimum, int maximum, int step);
-int psx_mod_menu_add_action(const char* label, const char* description,
-                            PSXModMenuAction callback);
+int psx_mod_menu_add_bool(const char* page, const char* label,
+                          const char* description, int* flag);
+int psx_mod_menu_add_int(const char* page, const char* label,
+                         const char* description, int* value,
+                         int minimum, int maximum, int step);
+int psx_mod_menu_add_action(const char* page, const char* label,
+                            const char* description, PSXModMenuAction callback);
 /* Pick one of `count` names; *value holds the 0-based index. Left/right step
  * through the list and wrap. `choices` (array and strings) is NOT copied and
  * must outlive the process (use static data). */
-int psx_mod_menu_add_choice(const char* label, const char* description,
-                            int* value, const char* const* choices,
-                            uint32_t count);
+int psx_mod_menu_add_choice(const char* page, const char* label,
+                            const char* description, int* value,
+                            const char* const* choices, uint32_t count);
 /*
  * A choice whose list can change while the menu is open, e.g. an "item" row
  * that lists only what an "item type" row selects. The runtime re-asks
@@ -279,8 +289,9 @@ int psx_mod_menu_add_choice(const char* label, const char* description,
  */
 typedef uint32_t (*PSXModMenuChoiceCount)(void);
 typedef const char* (*PSXModMenuChoiceName)(uint32_t index);
-int psx_mod_menu_add_dynamic_choice(const char* label, const char* description,
-                                    int* value, uint32_t max_count,
+int psx_mod_menu_add_dynamic_choice(const char* page, const char* label,
+                                    const char* description, int* value,
+                                    uint32_t max_count,
                                     PSXModMenuChoiceCount count_fn,
                                     PSXModMenuChoiceName name_fn);
 
@@ -295,6 +306,7 @@ enum {
     PSX_MOD_MENU_CHOICE = 3
 };
 typedef struct PSXModMenuItemInfo {
+    const char* page;           /* the plugin's page path, e.g. "My Mod/Editor" */
     const char* label;
     const char* description;
     int kind;

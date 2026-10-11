@@ -6272,17 +6272,20 @@ static void runtime_settings_ui_ensure_created(void) {
           RECOMP_RUNTIME_UI_ACTION, 0, 0, 0, nullptr, 0, nullptr },
     };
 
-    /* Rows added by plugins, all under one "Mods" heading. With no plugin rows
-     * the heading never appears. */
+    /* Rows added by plugins: each plugin names its own page and every page is
+     * filed under "Mods" (Mods > <page> > ...), so mods sit side by side.
+     * With no plugin rows the heading never appears. */
+    static std::deque<std::string> extra_sections;
     const uint32_t mod_count = psx_mod_menu_item_count();
     for (uint32_t i = 0; i < mod_count; ++i) {
         PSXModMenuItemInfo info;
         if (!psx_mod_menu_item_info(i, &info)) continue;
         extra_keys.push_back(std::string(kRuntimeModKeyPrefix) +
                              std::to_string(i));
+        extra_sections.push_back(std::string("Mods/") + info.page);
         RecompRuntimeUiItem item{};
         item.key = extra_keys.back().c_str();
-        item.section = "Mods";
+        item.section = extra_sections.back().c_str();
         item.label = info.label;
         item.description = info.description;
         item.type = info.kind == PSX_MOD_MENU_ACTION ? RECOMP_RUNTIME_UI_ACTION
