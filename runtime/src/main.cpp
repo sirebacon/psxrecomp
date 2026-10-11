@@ -6287,10 +6287,13 @@ static void runtime_settings_ui_ensure_created(void) {
         item.description = info.description;
         item.type = info.kind == PSX_MOD_MENU_ACTION ? RECOMP_RUNTIME_UI_ACTION
                   : info.kind == PSX_MOD_MENU_INT    ? RECOMP_RUNTIME_UI_INT
+                  : info.kind == PSX_MOD_MENU_CHOICE ? RECOMP_RUNTIME_UI_CHOICE
                                                      : RECOMP_RUNTIME_UI_BOOL;
         item.minimum = info.minimum;
         item.maximum = info.maximum;
         item.step = info.step;
+        item.choices = info.choices;
+        item.choice_count = info.choice_count;
         extras.push_back(item);
     }
 

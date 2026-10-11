@@ -264,6 +264,25 @@ int psx_mod_menu_add_int(const char* label, const char* description,
                          int* value, int minimum, int maximum, int step);
 int psx_mod_menu_add_action(const char* label, const char* description,
                             PSXModMenuAction callback);
+/* Pick one of `count` names; *value holds the 0-based index. Left/right step
+ * through the list and wrap. `choices` (array and strings) is NOT copied and
+ * must outlive the process (use static data). */
+int psx_mod_menu_add_choice(const char* label, const char* description,
+                            int* value, const char* const* choices,
+                            uint32_t count);
+/*
+ * A choice whose list can change while the menu is open, e.g. an "item" row
+ * that lists only what an "item type" row selects. The runtime re-asks
+ * count_fn/name_fn after any row changes; when the list changes, *value goes
+ * back to 0. max_count bounds count_fn() for the life of the process. Names
+ * returned by name_fn must stay valid (use static strings).
+ */
+typedef uint32_t (*PSXModMenuChoiceCount)(void);
+typedef const char* (*PSXModMenuChoiceName)(uint32_t index);
+int psx_mod_menu_add_dynamic_choice(const char* label, const char* description,
+                                    int* value, uint32_t max_count,
+                                    PSXModMenuChoiceCount count_fn,
+                                    PSXModMenuChoiceName name_fn);
 
 /* Short on-screen toast (e.g. to confirm a menu action). Plain ASCII text. */
 void psx_mod_osd_message(const char* text);
@@ -272,7 +291,8 @@ void psx_mod_osd_message(const char* text);
 enum {
     PSX_MOD_MENU_BOOL = 0,
     PSX_MOD_MENU_INT = 1,
-    PSX_MOD_MENU_ACTION = 2
+    PSX_MOD_MENU_ACTION = 2,
+    PSX_MOD_MENU_CHOICE = 3
 };
 typedef struct PSXModMenuItemInfo {
     const char* label;
@@ -281,6 +301,8 @@ typedef struct PSXModMenuItemInfo {
     int minimum;
     int maximum;
     int step;
+    const char* const* choices; /* PSX_MOD_MENU_CHOICE only */
+    uint32_t choice_count;
 } PSXModMenuItemInfo;
 uint32_t psx_mod_menu_item_count(void);
 /* Returns 0 if index is out of range. */

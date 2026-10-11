@@ -1439,6 +1439,15 @@ struct MenuItem {
     int step = 1;
     int* storage = nullptr;
     PSXModMenuAction action = nullptr;
+    const char* const* choices = nullptr;
+    uint32_t choice_count = 0;
+    /* Dynamic choices: choices points into dyn_names, sized once to
+     * choice_count (the max) so the pointer the menu holds stays valid. */
+    PSXModMenuChoiceCount dyn_count_fn = nullptr;
+    PSXModMenuChoiceName dyn_name_fn = nullptr;
+    std::vector<const char*> dyn_names;
+    uint32_t dyn_count = 0;
+    bool dyn_filled = false;
 };
 
 /* A deque keeps the std::string buffers (and so the const char* handed to the
@@ -1460,7 +1469,47 @@ int menu_add(MenuItem item, const char* label, const char* description) {
     return 1;
 }
 
+/* Re-read every dynamic list; a list that changed sends its value back to 0. */
+void menu_refresh_dynamic() {
+    for (MenuItem& item : menu_items()) {
+        if (!item.dyn_count_fn) continue;
+        uint32_t n = item.dyn_count_fn();
+        if (n > item.choice_count) n = item.choice_count;
+        const char* first_before = item.dyn_names[0];
+        for (uint32_t i = 0; i < item.choice_count; ++i) {
+            const char* name = i < n ? item.dyn_name_fn(i) : nullptr;
+            item.dyn_names[i] = name ? name : "";
+        }
+        const bool changed = item.dyn_filled &&
+            (n != item.dyn_count || item.dyn_names[0] != first_before);
+        item.dyn_count = n;
+        item.dyn_filled = true;
+        if (changed || *item.storage < 0 || (uint32_t)*item.storage >= n)
+            *item.storage = 0;
+    }
+}
+
 } // namespace
+
+extern "C" int psx_mod_menu_add_dynamic_choice(
+    const char* label, const char* description, int* value,
+    uint32_t max_count, PSXModMenuChoiceCount count_fn,
+    PSXModMenuChoiceName name_fn) {
+    if (!value || max_count == 0 || !count_fn || !name_fn) return 0;
+    MenuItem item;
+    item.kind = PSX_MOD_MENU_CHOICE;
+    item.minimum = 0;
+    item.maximum = (int)max_count - 1;
+    item.storage = value;
+    item.choice_count = max_count;
+    item.dyn_count_fn = count_fn;
+    item.dyn_name_fn = name_fn;
+    item.dyn_names.assign(max_count, "");
+    if (!menu_add(std::move(item), label, description)) return 0;
+    MenuItem& added = menu_items().back();
+    added.choices = added.dyn_names.data();
+    return 1;
+}
 
 extern "C" int psx_mod_menu_add_bool(const char* label, const char* description,
                                      int* flag) {
@@ -1494,6 +1543,23 @@ extern "C" int psx_mod_menu_add_action(const char* label,
     return menu_add(std::move(item), label, description);
 }
 
+extern "C" int psx_mod_menu_add_choice(const char* label,
+                                       const char* description, int* value,
+                                       const char* const* choices,
+                                       uint32_t count) {
+    if (!value || !choices || count == 0) return 0;
+    for (uint32_t i = 0; i < count; ++i)
+        if (!choices[i]) return 0;
+    MenuItem item;
+    item.kind = PSX_MOD_MENU_CHOICE;
+    item.minimum = 0;
+    item.maximum = (int)count - 1;
+    item.storage = value;
+    item.choices = choices;
+    item.choice_count = count;
+    return menu_add(std::move(item), label, description);
+}
+
 extern "C" uint32_t psx_mod_menu_item_count(void) {
     return (uint32_t)menu_items().size();
 }
@@ -1501,6 +1567,7 @@ extern "C" uint32_t psx_mod_menu_item_count(void) {
 extern "C" int psx_mod_menu_item_info(uint32_t index, PSXModMenuItemInfo* out) {
     auto& items = menu_items();
     if (!out || index >= items.size()) return 0;
+    if (index == 0) menu_refresh_dynamic(); /* the menu enumerates from 0 */
     const MenuItem& item = items[index];
     out->label = item.label.c_str();
     out->description = item.description.c_str();
@@ -1508,6 +1575,8 @@ extern "C" int psx_mod_menu_item_info(uint32_t index, PSXModMenuItemInfo* out) {
     out->minimum = item.minimum;
     out->maximum = item.maximum;
     out->step = item.step;
+    out->choices = item.choices;
+    out->choice_count = item.choice_count;
     return 1;
 }
 
@@ -1523,7 +1592,15 @@ extern "C" int psx_mod_menu_item_set(uint32_t index, int value) {
     if (index >= items.size() || !items[index].storage) return 0;
     MenuItem& item = items[index];
     if (value < item.minimum || value > item.maximum) return 0;
+    if (item.dyn_count_fn) {
+        /* The menu wraps over the fixed max length; fold that onto the live
+         * list: stepping forward past the end -> 0, back from 0 -> last. */
+        const int n = (int)item.dyn_count;
+        if (n == 0) value = 0;
+        else if (value >= n) value = value == *item.storage + 1 ? 0 : n - 1;
+    }
     *item.storage = value;
+    menu_refresh_dynamic();
     return 1;
 }
 
