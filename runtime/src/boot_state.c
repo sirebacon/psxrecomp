@@ -10,6 +10,7 @@
 #include "psx_icache.h"    /* g_psx_icache_tv — fetch-cost tags in BS_SEC_ICACHE */
 #include "psx_scheduler.h"
 #include "pst_wire.h"
+#include "mod_state.h"     /* plugin state blocks in BS_SEC_MODSTATE            */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -363,6 +364,10 @@ static int boot_state_save_to(BsOut* o, const CPUState* cpu,
                               uint32_t bios_checksum, uint32_t entry_pc) {
     BootStateHeader h;
     int ok;
+    uint8_t* mods = NULL;
+    size_t mods_len = 0;
+    /* Plugin state is serialized first so the header can count its section. */
+    if (!mod_state_serialize(&mods, &mods_len)) return 0;
     memset(&h, 0, sizeof h);
     h.magic         = BOOT_STATE_MAGIC;
     h.version       = BOOT_STATE_VERSION;
@@ -371,7 +376,7 @@ static int boot_state_save_to(BsOut* o, const CPUState* cpu,
     h.codegen_hash  = (uint32_t)PSX_OVERLAY_CODEGEN_HASH;
     h.abi_tag       = (int32_t)PSX_OVERLAY_ABI_TAG;
     h.codegen_ver   = (uint32_t)PSX_OVERLAY_CODEGEN_VER;
-    h.section_count = 17;
+    h.section_count = mods_len ? 18 : 17;
 
     ok = write_header_le(o, &h);
 
@@ -464,6 +469,8 @@ static int boot_state_save_to(BsOut* o, const CPUState* cpu,
             free(db);
         }
     }
+    if (ok && mods_len) ok = write_section(o, BS_SEC_MODSTATE, mods, mods_len);
+    free(mods);
     return ok;
 }
 
@@ -686,6 +693,11 @@ static int apply_section(uint32_t tag, const uint8_t* p, uint32_t len,
             if (!pst_r_u32(&r, &g_psx_icache_tv[i])) return 0;
         return 1;
     }
+    case BS_SEC_MODSTATE:
+        /* Only staged here; plugins see it in mod_state_load_finish once the
+         * whole machine is back. A bad section never refuses the load. */
+        mod_state_load_section(p, len);
+        return 1;
     default:
         /* Unknown section: SKIP, never fail. This was `return 0`, which made
          * every state written by a build with one extra section a poison pill
@@ -956,6 +968,7 @@ int boot_state_load_buffer(const uint8_t* file, size_t file_len,
 
     cur = file + BOOT_STATE_HEADER_WIRE_BYTES;
     end = file + file_len;
+    mod_state_load_begin();
 
     for (uint32_t i = 0; ok && i < h.section_count; i++) {
         PstR sh;
@@ -1027,11 +1040,14 @@ int boot_state_load_buffer(const uint8_t* file, size_t file_len,
         free(inflated);
     }
 
-    if (!ok || (seen & required) != required)
+    if (!ok || (seen & required) != required) {
+        mod_state_load_finish(0);
         return 0;
+    }
 
     /* RAM was memcpy'd; force overlay revalidation before resume. */
     overlay_watch_invalidate_after_ram_restore();
+    mod_state_load_finish(1);
 
     {
         const double total_ms = boot_state_mono_ms() - t0;

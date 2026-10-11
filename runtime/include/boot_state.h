@@ -104,6 +104,11 @@ enum {
                               from identical baselines). Optional on load for
                               old blobs (left untouched when absent).          */
     BS_SEC_SCHED  = 0x11,  /* deterministic scheduler return continuation       */
+    BS_SEC_MODSTATE = 0x12,/* plugin state blocks by id (mod_state.h). Optional:
+                              written only when a plugin registered one or a
+                              loaded state carried one; when absent on load,
+                              every registered block reads as absent. Readers
+                              without it skip the tag like any unknown one.   */
 };
 
 /* Save a COMPLETE snapshot at game handoff. Returns 1 on success. */

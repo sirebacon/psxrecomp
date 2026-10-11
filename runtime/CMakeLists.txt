@@ -304,6 +304,12 @@ if(BUILD_TESTING)
     target_link_libraries(mod_runtime_test PRIVATE chdr-static)
     add_test(NAME mod_runtime_test COMMAND mod_runtime_test)
 
+    add_executable(mod_state_test
+        tests/test_mod_state.c
+        src/mod_state.c)
+    target_include_directories(mod_state_test PRIVATE include)
+    add_test(NAME mod_state_test COMMAND mod_state_test)
+
     if(WIN32)
         add_executable(autocompile_publication_test
             tests/test_autocompile_publication.c

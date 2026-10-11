@@ -314,6 +314,49 @@ int psx_mod_menu_add_live_choice(const char* page, const char* label,
                                  const char* const* choices, uint32_t count,
                                  PSXModMenuGet get, PSXModMenuSet set);
 
+/*
+ * Plugin state in save states. Guest RAM is in every snapshot, but a plugin's
+ * own variables are not, so loading an F7 state (or rewinding, or a netplay
+ * rollback) would leave them at their pre-load values. A plugin keeps the
+ * state that must follow the game -- a counter, a library -- in one static
+ * block and registers it here under a stable id ("pe.loot"):
+ *
+ *   - every snapshot stores the block's bytes under that id and version;
+ *   - after a snapshot is restored, the runtime copies the saved bytes back
+ *     and calls on_loaded with PSX_MOD_STATE_RESTORED; when the snapshot has
+ *     no block for the id (taken before the mod existed, or with it missing)
+ *     it leaves the block alone and reports PSX_MOD_STATE_ABSENT, and the
+ *     plugin should reset to its defaults; when the saved version or size
+ *     differs it reports PSX_MOD_STATE_MISMATCH and passes the saved bytes
+ *     (valid during the call only) so the plugin can migrate or reset;
+ *   - blocks whose plugin is not running are kept and written into the next
+ *     snapshot, so a mod that is missing for a while does not lose its data.
+ *
+ * Bump `version` whenever the block's layout changes. Ids are at most 63
+ * bytes, blocks at most 64 KiB. Register from a PSX_MOD_CONSTRUCTOR; data must
+ * outlive the process (use a static). on_loaded may be NULL. Callbacks run on
+ * the emulation thread after the whole machine is restored, so guest reads
+ * there see the loaded game. Returns 1 on success, 0 on bad arguments, a
+ * duplicate id or a full registry.
+ */
+enum {
+    PSX_MOD_STATE_RESTORED = 0,
+    PSX_MOD_STATE_ABSENT = 1,
+    PSX_MOD_STATE_MISMATCH = 2
+};
+typedef void (*PSXModStateLoadedCallback)(int result, uint32_t saved_version,
+                                          const void* saved,
+                                          uint32_t saved_size);
+int psx_mod_register_state(const char* id, uint32_t version, void* data,
+                           uint32_t size, PSXModStateLoadedCallback on_loaded);
+/*
+ * Called after every whole-machine restore, after all on_loaded callbacks.
+ * For short-lived plugin state that is not worth saving but must not survive
+ * a jump in time (e.g. "an action is in progress"): drop it here.
+ */
+typedef void (*PSXModRestoreCallback)(void);
+int psx_mod_register_restore_callback(PSXModRestoreCallback callback);
+
 /* Short on-screen toast (e.g. to confirm a menu action). Plain ASCII text. */
 void psx_mod_osd_message(const char* text);
 
