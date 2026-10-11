@@ -6880,6 +6880,12 @@ static void runtime_settings_menu_host_pause_loop(void) {
         /* The other pause loops feed this; without it an open menu starves the
          * watchdog and the runtime aborts after a few seconds. */
         starvation_watchdog_heartbeat();
+#ifndef PSX_NO_DEBUG_TOOLS
+        /* Keep answering debug clients while paused: the guest is stopped at
+         * a VBlank boundary, so reads are consistent, and a client no longer
+         * hangs waiting for a reply until the menu happens to close. */
+        debug_server_poll();
+#endif
         SDL_Delay(8);
     }
     savestate_input_guard_arm();
