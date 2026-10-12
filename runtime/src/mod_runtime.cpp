@@ -1451,6 +1451,10 @@ struct MenuItem {
     std::vector<const char*> dyn_names;
     uint32_t dyn_count = 0;
     bool dyn_filled = false;
+    /* Grids: live tile count/labels; cursor in storage. */
+    PSXModMenuChoiceCount grid_count_fn = nullptr;
+    PSXModMenuCell grid_cell_fn = nullptr;
+    PSXModMenuAction grid_move = nullptr;
 };
 
 /* A deque keeps the std::string buffers (and so the const char* handed to the
@@ -1460,7 +1464,7 @@ std::deque<MenuItem>& menu_items() {
     return items;
 }
 
-constexpr size_t kMenuItemMax = 128;
+constexpr size_t kMenuItemMax = 192;
 
 /* A page is one or more non-empty '/'-separated names. */
 bool menu_page_valid(const char* page) {
@@ -1607,6 +1611,54 @@ extern "C" int psx_mod_menu_add_live_choice(const char* page, const char* label,
     return menu_add(std::move(item), page, label, description);
 }
 
+extern "C" int psx_mod_menu_add_grid(const char* page, const char* label,
+                                     const char* description, int* cursor,
+                                     uint32_t max_cells, uint32_t columns,
+                                     PSXModMenuChoiceCount count_fn,
+                                     PSXModMenuCell cell_fn,
+                                     PSXModMenuAction on_accept,
+                                     PSXModMenuAction on_move) {
+    if (!cursor || max_cells == 0 || columns == 0 || !count_fn || !cell_fn)
+        return 0;
+    MenuItem item;
+    item.kind = PSX_MOD_MENU_GRID;
+    item.minimum = 0;
+    item.maximum = (int)max_cells - 1;
+    item.step = (int)columns;
+    item.storage = cursor;
+    item.action = on_accept;
+    item.grid_count_fn = count_fn;
+    item.grid_cell_fn = cell_fn;
+    item.grid_move = on_move;
+    return menu_add(std::move(item), page, label, description);
+}
+
+extern "C" int psx_mod_menu_item_cell_count(uint32_t index) {
+    auto& items = menu_items();
+    if (index >= items.size() || !items[index].grid_count_fn) return 0;
+    uint32_t n = items[index].grid_count_fn();
+    if (n > (uint32_t)items[index].maximum + 1) n = (uint32_t)items[index].maximum + 1;
+    return (int)n;
+}
+
+extern "C" int psx_mod_menu_item_cell(uint32_t index, int cell, char* label,
+                                      uint32_t label_size, uint32_t* flags) {
+    auto& items = menu_items();
+    if (flags) *flags = 0;
+    if (!label || label_size == 0) return 0;
+    label[0] = '\0';
+    if (index >= items.size() || !items[index].grid_cell_fn) return 0;
+    if (cell >= psx_mod_menu_item_cell_count(index)) return 0;
+    uint32_t f = 0;
+    if (!items[index].grid_cell_fn(cell, label, label_size, &f)) {
+        label[0] = '\0';
+        return 0;
+    }
+    label[label_size - 1] = '\0';
+    if (flags) *flags = f;
+    return 1;
+}
+
 extern "C" uint32_t psx_mod_menu_item_count(void) {
     return (uint32_t)menu_items().size();
 }
@@ -1651,6 +1703,15 @@ extern "C" int psx_mod_menu_item_set(uint32_t index, int value) {
         return accepted;
     }
     if (!item.storage) return 0;
+    if (item.grid_count_fn) {
+        const int n = psx_mod_menu_item_cell_count(index);
+        if (value >= n) return 0;
+        const bool moved = *item.storage != value;
+        *item.storage = value;
+        if (moved && item.grid_move) item.grid_move();
+        menu_refresh_dynamic();
+        return 1;
+    }
     if (item.dyn_count_fn) {
         /* The menu wraps over the fixed max length; fold that onto the live
          * list: stepping forward past the end -> 0, back from 0 -> last. */
@@ -1671,6 +1732,7 @@ extern "C" int psx_mod_menu_item_run(uint32_t index) {
     auto& items = menu_items();
     if (index >= items.size() || !items[index].action) return 0;
     items[index].action();
+    menu_refresh_dynamic(); /* an action can change what other rows list */
     return 1;
 }
 

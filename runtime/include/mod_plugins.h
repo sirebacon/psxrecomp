@@ -315,6 +315,30 @@ int psx_mod_menu_add_live_choice(const char* page, const char* label,
                                  PSXModMenuGet get, PSXModMenuSet set);
 
 /*
+ * A grid of tiles, e.g. a collection board: `columns` tiles per row, up to
+ * max_cells. count_fn() says how many tiles show now; cell_fn(i, ...) writes
+ * tile i's short label and PSX_MOD_MENU_CELL_* flags and returns non-zero
+ * (i == -1 asks for a header shown right of the label, e.g. "9/20"; return 0
+ * for none). *cursor holds the selected tile. While the row is selected the
+ * arrows move the cursor (up/down leave at the grid's edges) and accept calls
+ * on_accept. on_move, if given, runs after the cursor moves. Both callbacks
+ * may be NULL.
+ */
+enum {
+    PSX_MOD_MENU_CELL_DIM = 1u << 0,       /* greyed: known but not usable */
+    PSX_MOD_MENU_CELL_EMPTY = 1u << 1,     /* faint: not discovered yet */
+    PSX_MOD_MENU_CELL_HIGHLIGHT = 1u << 2, /* gold frame */
+    PSX_MOD_MENU_CELL_MARK = 1u << 3       /* corner mark, e.g. in use */
+};
+typedef int (*PSXModMenuCell)(int index, char* label, uint32_t label_size,
+                              uint32_t* flags);
+int psx_mod_menu_add_grid(const char* page, const char* label,
+                          const char* description, int* cursor,
+                          uint32_t max_cells, uint32_t columns,
+                          PSXModMenuChoiceCount count_fn, PSXModMenuCell cell_fn,
+                          PSXModMenuAction on_accept, PSXModMenuAction on_move);
+
+/*
  * Plugin state in save states. Guest RAM is in every snapshot, but a plugin's
  * own variables are not, so loading an F7 state (or rewinding, or a netplay
  * rollback) would leave them at their pre-load values. A plugin keeps the
@@ -365,7 +389,8 @@ enum {
     PSX_MOD_MENU_BOOL = 0,
     PSX_MOD_MENU_INT = 1,
     PSX_MOD_MENU_ACTION = 2,
-    PSX_MOD_MENU_CHOICE = 3
+    PSX_MOD_MENU_CHOICE = 3,
+    PSX_MOD_MENU_GRID = 4      /* step = columns, maximum + 1 = max tiles */
 };
 typedef struct PSXModMenuItemInfo {
     const char* page;           /* the plugin's page path, e.g. "My Mod/Editor" */
@@ -384,6 +409,10 @@ int psx_mod_menu_item_info(uint32_t index, PSXModMenuItemInfo* out);
 int psx_mod_menu_item_get(uint32_t index, int* value_out);
 int psx_mod_menu_item_set(uint32_t index, int value);
 int psx_mod_menu_item_run(uint32_t index);
+/* PSX_MOD_MENU_GRID rows: live tile count, and one tile (index -1 = header). */
+int psx_mod_menu_item_cell_count(uint32_t index);
+int psx_mod_menu_item_cell(uint32_t index, int cell, char* label,
+                           uint32_t label_size, uint32_t* flags);
 /* Re-read every dynamic choice list; the host calls this when the menu opens,
  * since what a list shows (e.g. the equipped item) can change in play. */
 void psx_mod_menu_refresh(void);

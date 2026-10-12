@@ -6236,6 +6236,32 @@ static int runtime_ui_run_action(void *opaque,
     return 0;
 }
 
+static int runtime_ui_get_cell_count(void*, const RecompRuntimeUiItem *item) {
+    if (!item || !item->key) return 0;
+    const int mod_index = runtime_ui_mod_index(item->key);
+    return mod_index >= 0 ? psx_mod_menu_item_cell_count((uint32_t)mod_index) : 0;
+}
+
+/* Tile flags pass straight through. */
+static_assert(PSX_MOD_MENU_CELL_DIM == RECOMP_RUNTIME_UI_CELL_DIM &&
+              PSX_MOD_MENU_CELL_EMPTY == RECOMP_RUNTIME_UI_CELL_EMPTY &&
+              PSX_MOD_MENU_CELL_HIGHLIGHT == RECOMP_RUNTIME_UI_CELL_HIGHLIGHT &&
+              PSX_MOD_MENU_CELL_MARK == RECOMP_RUNTIME_UI_CELL_MARK,
+              "grid tile flags differ");
+
+static int runtime_ui_get_cell(void*, const RecompRuntimeUiItem *item, int index,
+                               char *label, size_t label_size,
+                               unsigned *flags) {
+    if (!item || !item->key) return 0;
+    const int mod_index = runtime_ui_mod_index(item->key);
+    if (mod_index < 0) return 0;
+    uint32_t f = 0;
+    const int ok = psx_mod_menu_item_cell((uint32_t)mod_index, index, label,
+                                          (uint32_t)label_size, &f);
+    if (flags) *flags = f;
+    return ok;
+}
+
 static int runtime_ui_is_enabled(void*, const RecompRuntimeUiItem *item) {
     if (!item || !item->key) return 0;
     if (std::strcmp(item->key, kRuntimeControllerRoute) == 0)
@@ -6291,6 +6317,7 @@ static void runtime_settings_ui_ensure_created(void) {
         item.type = info.kind == PSX_MOD_MENU_ACTION ? RECOMP_RUNTIME_UI_ACTION
                   : info.kind == PSX_MOD_MENU_INT    ? RECOMP_RUNTIME_UI_INT
                   : info.kind == PSX_MOD_MENU_CHOICE ? RECOMP_RUNTIME_UI_CHOICE
+                  : info.kind == PSX_MOD_MENU_GRID   ? RECOMP_RUNTIME_UI_GRID
                                                      : RECOMP_RUNTIME_UI_BOOL;
         item.minimum = info.minimum;
         item.maximum = info.maximum;
@@ -6311,6 +6338,8 @@ static void runtime_settings_ui_ensure_created(void) {
     config.menu.callbacks.set_value = runtime_ui_set_value;
     config.menu.callbacks.run_action = runtime_ui_run_action;
     config.menu.callbacks.is_enabled = runtime_ui_is_enabled;
+    config.menu.callbacks.get_cell_count = runtime_ui_get_cell_count;
+    config.menu.callbacks.get_cell = runtime_ui_get_cell;
     config.menu.callbacks.save = runtime_ui_save;
     config.menu.callbacks.visibility_changed = runtime_ui_visibility_changed;
     config.features =
